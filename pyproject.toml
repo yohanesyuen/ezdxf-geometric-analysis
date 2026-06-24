@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ezdxf-geometric-analysis"
+version = "0.1.0"
+description = "Five-pass geometric analysis pipeline for DXF drawings, producing structured JSON and LLM-ready Markdown payloads."
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+dependencies = [
+    "ezdxf>=1.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=7"]
+
+[project.scripts]
+analyze-dxf = "ezdxf_geometric_analysis.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["ezdxf_geometric_analysis*"]
