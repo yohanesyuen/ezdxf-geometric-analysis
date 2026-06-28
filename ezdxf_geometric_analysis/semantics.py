@@ -191,7 +191,7 @@ def assign_rooms(layers: dict) -> dict:
         for t in layer_data.get("text_annotations", []):
             _assign_nearest(room_labels, t["position"][0], t["position"][1], t.get("id", "?"), "text", layer_name)
         for b in layer_data.get("blocks", []):
-            _assign_nearest(room_labels, b["position"][0], b["position"][1], b.get("handle", "?"), "block", layer_name)
+            _assign_nearest(room_labels, b["position"][0], b["position"][1], b.get("id", "?"), "block", layer_name)
 
     return {"rooms": room_labels}
 
