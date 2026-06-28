@@ -20,7 +20,7 @@ from .topology import topological_analysis
 logger = logging.getLogger(__name__)
 
 
-def analyze_dxf(file_path: str) -> tuple[dict, str]:
+def analyze_dxf(file_path: str, **kwargs) -> tuple[dict, str]:
     """
     Run the full geometric analysis pipeline on a DXF file.
 
@@ -29,6 +29,9 @@ def analyze_dxf(file_path: str) -> tuple[dict, str]:
     Pass 3: Spatial Descriptors
     Pass 4: Semantic Grouping
     Pass 5: LLM Payload Generation
+
+    `scale_factor` and `rounding` kwargs override the values auto-detected
+    from the drawing's extents and paper size (see `compute_normalization`).
 
     Returns (analysis_dict, markdown_payload).
     """
@@ -41,8 +44,13 @@ def analyze_dxf(file_path: str) -> tuple[dict, str]:
     min_x, min_y, max_x, max_y = compute_bounds(msp)
     norm = compute_normalization(min_x, min_y, max_x, max_y)
 
-    scale_factor = norm["scale_factor"]
-    rounding = norm["rounding"]
+    scale_factor = kwargs.get("scale_factor", norm["scale_factor"])
+    rounding = kwargs.get("rounding", norm["rounding"])
+    if scale_factor != norm["scale_factor"]:
+        norm["width"] = norm["width"] * norm["scale_factor"] / scale_factor
+        norm["height"] = norm["height"] * norm["scale_factor"] / scale_factor
+    norm["scale_factor"] = scale_factor
+    norm["rounding"] = rounding
     layers = extract_entities(
         msp, norm["center_x"], norm["center_y"],
         scale=scale_factor, rounding=rounding,
