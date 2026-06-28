@@ -147,7 +147,10 @@ def build_adjacency_graph(
 
 
 def detect_loops(
-    adjacency: list[list[int]], max_loop_length: int = 20, max_total_loops: int = 2000
+    adjacency: list[list[int]],
+    max_loop_length: int = 20,
+    max_total_loops: int = 2000,
+    max_dfs_steps: int = 3_000_000,
 ) -> tuple[list[list[int]], bool]:
     """
     Detect closed boundary loops in the adjacency graph using DFS cycle finding.
@@ -157,12 +160,20 @@ def detect_loops(
     repeated wall/grid patterns) can still blow up combinatorially even with
     that bound, so detection also bails out once max_total_loops is reached.
 
+    max_total_loops only helps once a cycle actually closes, so it can't stop
+    graphs with high branching but few or no cycles (e.g. branching duct or
+    electrical riser networks) from exploring an exponential number of
+    dead-end paths. max_dfs_steps bounds total DFS work directly — it counts
+    every stack expansion across all starting nodes, regardless of whether
+    any cycle is ever found, and is the backstop for that case.
+
     Returns (loops, truncated) — loops is a list of node_id lists forming each
-    cycle; truncated is True if detection stopped early due to max_total_loops.
+    cycle; truncated is True if detection stopped early due to max_total_loops
+    or max_dfs_steps.
     """
     logger.info(
-        "Detecting closed loops (max length=%d, max total=%d)...",
-        max_loop_length, max_total_loops,
+        "Detecting closed loops (max length=%d, max total=%d, max dfs steps=%d)...",
+        max_loop_length, max_total_loops, max_dfs_steps,
     )
 
     num_nodes = len(adjacency)
@@ -170,16 +181,22 @@ def detect_loops(
     # Track unique loops by their sorted node set to avoid duplicates
     seen_loops: set[frozenset[int]] = set()
     truncated = False
+    steps = 0
 
     def _dfs(start: int) -> None:
         """Find all simple cycles passing through *start* using bounded DFS."""
-        nonlocal truncated
+        nonlocal truncated, steps
         # Stack entries: (current_node, path_so_far, visited_in_path)
         stack: list[tuple[int, list[int], set[int]]] = [
             (start, [start], {start})
         ]
 
         while stack:
+            steps += 1
+            if steps > max_dfs_steps:
+                truncated = True
+                return
+
             node, path, visited = stack.pop()
 
             if len(path) > max_loop_length:
@@ -266,7 +283,11 @@ def compute_loop_metadata(
 
 
 def topological_analysis(
-    layers: dict, tolerance: float = 1.0, max_loop_length: int = 20, max_total_loops: int = 2000
+    layers: dict,
+    tolerance: float = 1.0,
+    max_loop_length: int = 20,
+    max_total_loops: int = 2000,
+    max_dfs_steps: int = 3_000_000,
 ) -> dict:
     """
     Run the full Pass 2 topological analysis pipeline.
@@ -284,7 +305,10 @@ def topological_analysis(
     nodes, pt_to_id = cluster_nodes(layers, tolerance=tolerance)
     adjacency, edges = build_adjacency_graph(layers, pt_to_id, len(nodes))
     loops, loops_truncated = detect_loops(
-        adjacency, max_loop_length=max_loop_length, max_total_loops=max_total_loops
+        adjacency,
+        max_loop_length=max_loop_length,
+        max_total_loops=max_total_loops,
+        max_dfs_steps=max_dfs_steps,
     )
     loop_metadata = compute_loop_metadata(loops, nodes)
 
@@ -306,6 +330,7 @@ def topological_analysis(
             "clustering_tolerance": tolerance,
             "max_loop_length": max_loop_length,
             "max_total_loops": max_total_loops,
+            "max_dfs_steps": max_dfs_steps,
         },
         "nodes": {
             "count": len(nodes),
