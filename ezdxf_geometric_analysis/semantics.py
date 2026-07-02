@@ -179,30 +179,34 @@ def assign_rooms(layers: dict) -> dict:
     if not room_labels:
         return {"rooms": []}
 
-    # Assign every entity to nearest room label. Requires _assign_entity_ids()
-    # to have run first so each entity carries an "id" (e.g. "L_001").
+    # Assign every entity to nearest room label. Each entity dict is expected
+    # to carry a "handle" key (the CAD entity handle, e.g. "2A3"), matching
+    # the convention already used for block entities (see furniture.py). Fall
+    # back to the synthetic "id" (e.g. "L_001") assigned by Pass 5's
+    # _assign_entity_ids() for callers that run the standalone analyze_dxf()
+    # pipeline directly against a DXF file, where no live CAD handle exists.
     for layer_name, layer_data in layers.items():
         for seg in layer_data.get("lines", []):
             mx = (seg["start"][0] + seg["end"][0]) / 2
             my = (seg["start"][1] + seg["end"][1]) / 2
-            _assign_nearest(room_labels, mx, my, seg.get("id", "?"), "line", layer_name)
+            _assign_nearest(room_labels, mx, my, seg.get("handle", seg.get("id", "?")), "line", layer_name)
         for ca in layer_data.get("circles_arcs", []):
-            _assign_nearest(room_labels, ca["center"][0], ca["center"][1], ca.get("id", "?"), "circle_arc", layer_name)
+            _assign_nearest(room_labels, ca["center"][0], ca["center"][1], ca.get("handle", ca.get("id", "?")), "circle_arc", layer_name)
         for t in layer_data.get("text_annotations", []):
-            _assign_nearest(room_labels, t["position"][0], t["position"][1], t.get("id", "?"), "text", layer_name)
+            _assign_nearest(room_labels, t["position"][0], t["position"][1], t.get("handle", t.get("id", "?")), "text", layer_name)
         for b in layer_data.get("blocks", []):
             _assign_nearest(room_labels, b["position"][0], b["position"][1], b.get("handle", "?"), "block", layer_name)
 
     return {"rooms": room_labels}
 
 
-def _assign_nearest(rooms: list[dict], x: float, y: float, entity_id: str, etype: str, layer: str) -> None:
+def _assign_nearest(rooms: list[dict], x: float, y: float, entity_handle: str, etype: str, layer: str) -> None:
     best_idx, best_dist = 0, float("inf")
     for i, r in enumerate(rooms):
         d = math.hypot(x - r["position"][0], y - r["position"][1])
         if d < best_dist:
             best_idx, best_dist = i, d
-    rooms[best_idx]["entities"].append({"id": entity_id, "type": etype, "layer": layer})
+    rooms[best_idx]["entities"].append({"handle": entity_handle, "type": etype, "layer": layer})
 
 
 def semantic_grouping(layers: dict, proximity_radius: float | None = None) -> dict:
