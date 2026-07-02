@@ -104,3 +104,73 @@ def test_truncates_at_max_total_loops():
     loops, truncated = detect_loops(adjacency, max_loop_length=5, max_total_loops=2)
     assert len(loops) == 2
     assert truncated is True
+
+
+def _tree_adjacency(depth, branching):
+    """Complete b-ary tree, BFS-numbered. A tree has zero cycles, so
+    max_total_loops can never trigger — only a DFS step budget can bound it."""
+    adjacency = [[]]
+    frontier = [0]
+    for _ in range(depth):
+        new_frontier = []
+        for parent in frontier:
+            for _ in range(branching):
+                child = len(adjacency)
+                adjacency.append([])
+                adjacency[parent].append(child)
+                adjacency[child].append(parent)
+                new_frontier.append(child)
+        frontier = new_frontier
+    return adjacency
+
+
+def test_truncates_via_dfs_step_budget_on_cycle_free_graph():
+    # A branching, cycle-free tree never satisfies max_total_loops (no loop
+    # ever closes), so without a separate step budget this search would run
+    # to full exhaustion -- exponential in branching^depth. max_dfs_steps
+    # must catch this independently and finish quickly regardless of size.
+    adjacency = _tree_adjacency(depth=11, branching=3)  # ~265K nodes
+
+    start = time.monotonic()
+    loops, truncated = detect_loops(
+        adjacency, max_loop_length=20, max_total_loops=2000, max_dfs_steps=10_000
+    )
+    elapsed = time.monotonic() - start
+
+    assert loops == []
+    assert truncated is True
+    assert elapsed < 5.0, f"detect_loops took {elapsed:.2f}s — step-budget regression?"
+
+
+def test_step_budget_does_not_truncate_small_cycle_free_graphs():
+    # A modest tree well within the default budget should report no
+    # truncation -- the safeguard shouldn't kick in for ordinary inputs.
+    adjacency = _tree_adjacency(depth=8, branching=3)  # 9841 nodes
+
+    loops, truncated = detect_loops(adjacency, max_loop_length=20, max_total_loops=2000)
+    assert loops == []
+    assert truncated is False
+
+
+def test_step_budget_does_not_shrink_legitimate_dense_loop_counts():
+    # Dense, highly-cyclic graphs (like a rectilinear room grid) should still
+    # be bounded by max_total_loops as before, not cut short early by the
+    # new step budget.
+    def grid_adjacency(size):
+        def nid(i, j):
+            return i * size + j
+        adjacency = [[] for _ in range(size * size)]
+        for i in range(size):
+            for j in range(size):
+                if j + 1 < size:
+                    adjacency[nid(i, j)].append(nid(i, j + 1))
+                    adjacency[nid(i, j + 1)].append(nid(i, j))
+                if i + 1 < size:
+                    adjacency[nid(i, j)].append(nid(i + 1, j))
+                    adjacency[nid(i + 1, j)].append(nid(i, j))
+        return adjacency
+
+    adjacency = grid_adjacency(10)
+    loops, truncated = detect_loops(adjacency, max_loop_length=20, max_total_loops=2000)
+    assert len(loops) == 2000
+    assert truncated is True
