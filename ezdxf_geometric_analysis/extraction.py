@@ -373,12 +373,45 @@ def extract_text(entity, center_x: float, center_y: float,
     return {"position": [tx, ty], "text": content.strip()}
 
 
+def _iter_flattened(entities, depth: int = 0, max_depth: int = 25):
+    """
+    Recursively explode INSERT entities to leaf primitive geometry via
+    ezdxf's ``Insert.virtual_entities()``, which resolves nested inserts
+    and applies their *full* cumulative transform (translation, rotation,
+    and non-uniform x/y/z scale) -- unlike the block-entity transform this
+    function replaces, which only applied insertion-point translation and
+    ``xscale``, silently ignoring rotation and yscale/zscale entirely for
+    every block instance, nested or not.
+
+    ``virtual_entities()`` only unpacks one level per call (a nested
+    INSERT inside the exploded content comes back as its own INSERT,
+    already transformed into the parent's coordinate space, but not
+    further exploded) -- so this recurses on any INSERT it encounters,
+    depth-guarded against unexpected cycles/pathological nesting.
+    Non-INSERT entities pass through unchanged. An INSERT whose
+    ``virtual_entities()`` raises (e.g. an unresolvable/malformed block
+    reference) is skipped rather than aborting the whole walk.
+    """
+    for entity in entities:
+        if entity.dxftype() == "INSERT":
+            if depth >= max_depth:
+                continue
+            try:
+                children = entity.virtual_entities()
+            except Exception:
+                continue
+            yield from _iter_flattened(children, depth + 1, max_depth)
+        else:
+            yield entity
+
+
 def extract_entities(msp, center_x: float, center_y: float,
                      scale: float = 1.0, rounding: int = 2) -> dict:
     """
     Iterate all modelspace entities and extract normalized geometry,
-    grouped by layer. Explodes INSERT (block reference) entities into
-    their constituent primitives. Extracts SOLID as line outlines.
+    grouped by layer. Explodes INSERT (block reference) entities --
+    recursively, at any nesting depth -- into their constituent
+    primitives. Extracts SOLID as line outlines.
 
     Returns a defaultdict of layers -> {lines, circles_arcs, text_annotations}.
     """
@@ -405,72 +438,25 @@ def extract_entities(msp, center_x: float, center_y: float,
             {"start": [sx, sy], "end": [ex, ey], "alignment": alignment}
         )
 
-    def _process_block_entity(sub_ent, ins_layer, ins_x, ins_y, ins_scale):
-        """Process a sub-entity from an exploded block."""
-        etype = sub_ent.dxftype()
-        layer = ins_layer
+    # counts["INSERT"] historically meant "top-level block references
+    # placed directly in modelspace" -- preserve that meaning rather than
+    # counting every nested INSERT the recursive flatten below resolves
+    # through, which would make this number depth-dependent.
+    counts["INSERT"] = sum(1 for e in msp if e.dxftype() == "INSERT")
 
-        if etype == "LINE":
-            sx = _r((sub_ent.dxf.start.x * ins_scale + ins_x - center_x) / scale, rounding)
-            sy = _r((sub_ent.dxf.start.y * ins_scale + ins_y - center_y) / scale, rounding)
-            ex = _r((sub_ent.dxf.end.x * ins_scale + ins_x - center_x) / scale, rounding)
-            ey = _r((sub_ent.dxf.end.y * ins_scale + ins_y - center_y) / scale, rounding)
-            _add_line(layer, sx, sy, ex, ey)
-            counts["LINE"] += 1
-
-        elif etype == "CIRCLE":
-            cx = _r((sub_ent.dxf.center.x * ins_scale + ins_x - center_x) / scale, rounding)
-            cy = _r((sub_ent.dxf.center.y * ins_scale + ins_y - center_y) / scale, rounding)
-            radius = _r(sub_ent.dxf.radius * ins_scale / scale, rounding)
-            layers[layer]["circles_arcs"].append(
-                {"center": [cx, cy], "radius": radius, "angles": None}
-            )
-            counts["CIRCLE"] += 1
-
-        elif etype == "ARC":
-            cx = _r((sub_ent.dxf.center.x * ins_scale + ins_x - center_x) / scale, rounding)
-            cy = _r((sub_ent.dxf.center.y * ins_scale + ins_y - center_y) / scale, rounding)
-            radius = _r(sub_ent.dxf.radius * ins_scale / scale, rounding)
-            layers[layer]["circles_arcs"].append(
-                {"center": [cx, cy], "radius": radius,
-                 "angles": [round(sub_ent.dxf.start_angle, 1),
-                            round(sub_ent.dxf.end_angle, 1)]}
-            )
-            counts["ARC"] += 1
-
-        elif etype in ("TEXT", "MTEXT"):
-            tx = _r((sub_ent.dxf.insert.x * ins_scale + ins_x - center_x) / scale, rounding)
-            ty = _r((sub_ent.dxf.insert.y * ins_scale + ins_y - center_y) / scale, rounding)
-            if etype == "TEXT":
-                content = sub_ent.dxf.text
-            else:
-                content = sub_ent.text
-                content = ezdxf.tools.text.plain_mtext(content)
-                content = content.replace("\n", " ")
-            layers[layer]["text_annotations"].append(
-                {"position": [tx, ty], "text": content.strip()}
-            )
-            counts[etype] += 1
-
-    # Main iteration
-    for entity in msp:
+    # Main iteration -- INSERT entities are pre-flattened (recursively, at
+    # any nesting depth, with the transform already fully applied by
+    # virtual_entities()) so their leaf geometry flows through the exact
+    # same per-type extraction as entities placed directly in modelspace,
+    # rather than a separate hand-rolled (and previously
+    # transform-incomplete) code path. _iter_flattened() never yields an
+    # INSERT itself (it either recurses into or skips one), so no INSERT
+    # branch is needed here.
+    for entity in _iter_flattened(msp):
         layer = entity.dxf.layer
         etype = entity.dxftype()
 
-        if etype == "INSERT":
-            counts["INSERT"] += 1
-            ins_pt = entity.dxf.insert
-            ins_s = entity.dxf.get("xscale", 1.0)
-            try:
-                block = entity.doc.blocks.get(entity.dxf.name)
-                if block:
-                    for sub_ent in block:
-                        if sub_ent.dxftype() in ("LINE", "CIRCLE", "ARC", "TEXT", "MTEXT"):
-                            _process_block_entity(sub_ent, layer, ins_pt.x, ins_pt.y, ins_s)
-            except Exception:
-                pass
-
-        elif etype == "SOLID":
+        if etype == "SOLID":
             counts["SOLID"] += 1
             pts = []
             for attr in ("vtx0", "vtx1", "vtx2", "vtx3"):
